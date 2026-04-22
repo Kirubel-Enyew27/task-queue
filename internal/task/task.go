@@ -21,3 +21,16 @@ type Task struct {
 	UpdatedAt time.Time
 	Error     string
 }
+
+func (t *Task) Clone() *Task {
+	if t == nil {
+		return nil
+	}
+
+	cp := *t
+	if t.Payload != nil {
+		cp.Payload = append([]byte(nil), t.Payload...)
+	}
+
+	return &cp
+}

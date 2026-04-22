@@ -10,11 +10,12 @@ import (
 )
 
 type Queue struct {
-	ch    chan *task.Task
-	store map[string]*task.Task
-	mu    sync.RWMutex
-	once  sync.Once
-	log   *slog.Logger
+	ch     chan *task.Task
+	store  map[string]*task.Task
+	mu     sync.RWMutex
+	once   sync.Once
+	closed bool
+	log    *slog.Logger
 }
 
 func New(capacity int, log *slog.Logger) *Queue {
@@ -36,6 +37,10 @@ func (q *Queue) Enqueue(t *task.Task) error {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
+	if q.closed {
+		return fmt.Errorf("queue is closed")
+	}
 
 	select {
 	case q.ch <- t:
@@ -68,12 +73,18 @@ func (q *Queue) Get(id string) (*task.Task, bool) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	t, ok := q.store[id]
-	return t, ok
+	if !ok {
+		return nil, false
+	}
+	return t.Clone(), true
 }
 
 func (q *Queue) Drain(ctx context.Context) {
 	q.once.Do(func() {
+		q.mu.Lock()
+		q.closed = true
 		close(q.ch)
+		q.mu.Unlock()
 		q.log.Info("queue channel closed, draining...")
 	})
 	<-ctx.Done()
