@@ -13,10 +13,15 @@ type Queue struct {
 	ch    chan *task.Task
 	store map[string]*task.Task
 	mu    sync.RWMutex
+	once  sync.Once
 	log   *slog.Logger
 }
 
 func New(capacity int, log *slog.Logger) *Queue {
+	if log == nil {
+		log = slog.Default()
+	}
+
 	return &Queue{
 		ch:    make(chan *task.Task, capacity),
 		store: make(map[string]*task.Task, 0),
@@ -30,11 +35,11 @@ func (q *Queue) Enqueue(t *task.Task) error {
 	t.UpdatedAt = t.CreatedAt
 
 	q.mu.Lock()
-	q.store[t.ID] = t
-	q.mu.Unlock()
+	defer q.mu.Unlock()
 
 	select {
 	case q.ch <- t:
+		q.store[t.ID] = t
 		q.log.Info("task enqueued", "id", t.ID)
 		return nil
 	default:
@@ -67,7 +72,9 @@ func (q *Queue) Get(id string) (*task.Task, bool) {
 }
 
 func (q *Queue) Drain(ctx context.Context) {
-	close(q.ch)
-	q.log.Info("queue channel closed, draining...")
+	q.once.Do(func() {
+		close(q.ch)
+		q.log.Info("queue channel closed, draining...")
+	})
 	<-ctx.Done()
 }

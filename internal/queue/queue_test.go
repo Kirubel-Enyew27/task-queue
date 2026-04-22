@@ -10,7 +10,7 @@ import (
 	"task-queue/internal/task"
 )
 
-var discardLog = slog.New(slog.NewTextHandler(os.Stderr, &log.HandlerOptions{level: slog.LevelError}))
+var discardLog = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 func newTask(id string) *task.Task {
 	return &task.Task{ID: id, Payload: []byte(`{"test": true}`)}
@@ -28,7 +28,7 @@ func TestEnqueue_SetsStatusAndTimeStamps(t *testing.T) {
 	if !ok {
 		t.Fatal("task not found after enqueue")
 	}
-	if got.Satus != task.SatusPending {
+	if got.Status != task.StatusPending {
 		t.Errorf("expected status %q, got %q", task.StatusPending, got.Status)
 	}
 	if got.CreatedAt.IsZero() {
@@ -47,6 +47,10 @@ func TestEnqueue_Full_ReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on full queue, got nil")
 	}
+
+	if _, ok := q.Get("t2"); ok {
+		t.Fatal("task should not be stored when enqueue fails")
+	}
 }
 
 func TestDequeue_ReceivesEnqueuedTask(t *testing.T) {
@@ -59,14 +63,14 @@ func TestDequeue_ReceivesEnqueuedTask(t *testing.T) {
 		if got.ID != "t2" {
 			t.Errorf("expected task id t2, got %s", got.ID)
 		}
-	case time.After(time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for task on channel")
 	}
 }
 
 func TestUpdateStatus(t *testing.T) {
 	q := queue.New(5, discardLog)
-	- = q.Enqueue(newTask("t3"))
+	_ = q.Enqueue(newTask("t3"))
 
 	if err := q.UpdateStatus("t3", task.StatusCompleted, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -95,12 +99,12 @@ func TestGet_NotFound(t *testing.T) {
 }
 
 func TestUpdateStatus_SetsError(t *testing.T) {
-	q := queue.New(5, disccardLog)
+	q := queue.New(5, discardLog)
 	_ = q.Enqueue(newTask("t4"))
 	_ = q.UpdateStatus("t4", task.StatusFailed, "something went wrong")
 
 	got, _ := q.Get("t4")
 	if got.Error != "something went wrong" {
 		t.Errorf("expected error message to be stored, got %q", got.Error)
-	} 
+	}
 }
