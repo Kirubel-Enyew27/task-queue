@@ -15,7 +15,6 @@ import (
 
 var discardLog = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-// fakeQueue implements worker.StatusUpdater for testing without a real Queue.
 type fakeQueue struct {
 	mu      sync.Mutex
 	tasks   map[string]*task.Task
@@ -31,7 +30,7 @@ type statusUpdate struct {
 
 func newFakeQueue(cap int) *fakeQueue {
 	return &fakeQueue{
-		tasks: make(map[string]*task.Task),
+		tasks: make(map[string]*task.Task, cap),
 		ch:    make(chan *task.Task, cap),
 	}
 }
@@ -56,8 +55,6 @@ func (f *fakeQueue) push(t *task.Task) {
 }
 
 func (f *fakeQueue) close() { close(f.ch) }
-
-// ---- Tests ----
 
 func TestPool_ProcessesTasksSuccessfully(t *testing.T) {
 	fq := newFakeQueue(10)
@@ -115,21 +112,20 @@ func TestPool_MarksFailed_OnHandlerError(t *testing.T) {
 		}
 	}
 	if finalStatus != task.StatusFailed {
-		t.Errorf("expected StatusFailed, got %q", finalStatus)
+		t.Errorf("expected statusFailed, got %q", finalStatus)
 	}
 }
 
-func TestPool_StopsOnContextCancel(t *testing.T) {
+func TestPool_StopOnContextCancel(t *testing.T) {
 	fq := newFakeQueue(10)
 
 	handler := func(ctx context.Context, _ *task.Task) error {
-		<-ctx.Done() // block until cancelled
+		<-ctx.Done()
 		return ctx.Err()
 	}
 
 	pool := worker.NewPool(2, fq, handler, discardLog)
 
-	// push one task that will block
 	fq.push(&task.Task{ID: "blocking"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -143,13 +139,12 @@ func TestPool_StopsOnContextCancel(t *testing.T) {
 
 	select {
 	case <-done:
-		// pool exited cleanly after context cancel — pass
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker pool did not stop after context cancellation")
 	}
 }
 
-func TestPool_SetsProcessingBeforeHandling(t *testing.T) {
+func TestPool_SetProcessingBeforeHandling(t *testing.T) {
 	fq := newFakeQueue(5)
 
 	handler := func(_ context.Context, _ *task.Task) error { return nil }

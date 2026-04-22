@@ -14,14 +14,16 @@ import (
 	"task-queue/internal/worker"
 )
 
+const shutdownTimeout = 5 * time.Second
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 
-	// Graceful shutdown: cancel context on SIGINT / SIGTERM.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
 	const (
 		queueCapacity = 100
@@ -42,6 +44,9 @@ func main() {
 	}
 
 	pool := worker.NewPool(workerCount, q, handler, log)
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	defer cancelWorkers()
+	poolDone := make(chan struct{})
 
 	// Enqueue a handful of demo tasks before workers start consuming.
 	for i := range 10 {
@@ -55,6 +60,31 @@ func main() {
 	}
 
 	log.Info("starting worker pool", "workers", workerCount)
-	pool.Start(ctx) // blocks until ctx cancelled and all workers exit
+	go func() {
+		defer close(poolDone)
+		pool.Start(workerCtx)
+	}()
+
+	sig := <-sigCh
+	log.Info("shutdown requested", "signal", sig.String())
+	closeQueue(q)
+	waitForPoolShutdown(poolDone, cancelWorkers, shutdownTimeout, log)
 	log.Info("shutdown complete")
+}
+
+func closeQueue(q *queue.Queue) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	q.Drain(ctx)
+}
+
+func waitForPoolShutdown(done <-chan struct{}, cancel context.CancelFunc, timeout time.Duration, log *slog.Logger) {
+	select {
+	case <-done:
+		return
+	case <-time.After(timeout):
+		log.Warn("shutdown timed out, canceling workers")
+		cancel()
+		<-done
+	}
 }

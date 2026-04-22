@@ -13,10 +13,10 @@ import (
 var discardLog = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 func newTask(id string) *task.Task {
-	return &task.Task{ID: id, Payload: []byte(`{"test":true}`)}
+	return &task.Task{ID: id, Payload: []byte(`{"test": true}`)}
 }
 
-func TestEnqueue_SetsStatusAndTimestamps(t *testing.T) {
+func TestEnqueue_SetsStatusAndTimeStamps(t *testing.T) {
 	q := queue.New(10, discardLog)
 	tk := newTask("t1")
 
@@ -46,6 +46,10 @@ func TestEnqueue_Full_ReturnsError(t *testing.T) {
 	err := q.Enqueue(newTask("t2"))
 	if err == nil {
 		t.Fatal("expected error on full queue, got nil")
+	}
+
+	if _, ok := q.Get("t2"); ok {
+		t.Fatal("task should not be stored when enqueue fails")
 	}
 }
 
@@ -90,7 +94,7 @@ func TestGet_NotFound(t *testing.T) {
 	q := queue.New(5, discardLog)
 	_, ok := q.Get("ghost")
 	if ok {
-		t.Error("expected ok=false for missing task")
+		t.Error("expected ok=false or missing task")
 	}
 }
 
