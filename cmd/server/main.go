@@ -2,19 +2,22 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"task-queue/internal/api"
 	"task-queue/internal/queue"
 	"task-queue/internal/task"
 	"task-queue/internal/worker"
 )
 
 const shutdownTimeout = 5 * time.Second
+const serverAddress = ":8080"
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -31,6 +34,11 @@ func main() {
 	)
 
 	q := queue.New(queueCapacity, log)
+	httpHandler := api.NewHandler(q, log)
+	server := &http.Server{
+		Addr:    serverAddress,
+		Handler: httpHandler,
+	}
 
 	// handler simulates real work: sleeps briefly then prints the payload.
 	handler := func(ctx context.Context, t *task.Task) error {
@@ -47,17 +55,7 @@ func main() {
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 	poolDone := make(chan struct{})
-
-	// Enqueue a handful of demo tasks before workers start consuming.
-	for i := range 10 {
-		t := &task.Task{
-			ID:      fmt.Sprintf("task-%03d", i+1),
-			Payload: []byte(fmt.Sprintf(`{"job":"demo","index":%d}`, i+1)),
-		}
-		if err := q.Enqueue(t); err != nil {
-			log.Error("enqueue failed", "err", err)
-		}
-	}
+	serverErrCh := make(chan error, 1)
 
 	log.Info("starting worker pool", "workers", workerCount)
 	go func() {
@@ -65,8 +63,26 @@ func main() {
 		pool.Start(workerCtx)
 	}()
 
-	sig := <-sigCh
-	log.Info("shutdown requested", "signal", sig.String())
+	go func() {
+		log.Info("http server listening", "addr", serverAddress)
+		serverErrCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case sig := <-sigCh:
+		log.Info("shutdown requested", "signal", sig.String())
+	case err := <-serverErrCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("http server stopped unexpectedly", "err", err)
+		}
+	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancelShutdown()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Error("http server shutdown failed", "err", err)
+	}
+
 	closeQueue(q)
 	waitForPoolShutdown(poolDone, cancelWorkers, shutdownTimeout, log)
 	log.Info("shutdown complete")
