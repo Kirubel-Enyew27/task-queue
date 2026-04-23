@@ -4,11 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
-
-	_ "modernc.org/sqlite"
-
 	"task-queue/internal/task"
+	"time"
 )
 
 type Store struct {
@@ -50,7 +47,6 @@ func initSchema(db *sql.DB) error {
 			return fmt.Errorf("initialize sqlite schema: %w", err)
 		}
 	}
-
 	return nil
 }
 
@@ -61,7 +57,7 @@ func (s *Store) Save(t *task.Task) error {
 
 	_, err := s.db.Exec(
 		`INSERT INTO tasks (id, payload, status, created_at, updated_at, error)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?)`,
 		t.ID,
 		append([]byte(nil), t.Payload...),
 		string(t.Status),
@@ -72,15 +68,57 @@ func (s *Store) Save(t *task.Task) error {
 	if err != nil {
 		return fmt.Errorf("save task %s: %w", t.ID, err)
 	}
-
 	return nil
+}
+
+func (s *Store) ListByStatus(status task.Status) ([]*task.Task, error) {
+	rows, err := s.db.Query(
+		`SELECT id, payload, status, created_at, updated_at, error
+		FROM tasks
+		WHERE status = ?
+		ORDER BY created_at ASC`,
+		string(status),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list tasks by status %q: %w", status, err)
+	}
+	defer rows.Close()
+
+	tasks := make([]*task.Task, 0)
+	for rows.Next() {
+		var (
+			t        task.Task
+			payload  []byte
+			status   string
+			created  int64
+			updated  int64
+			errField string
+		)
+
+		if err := rows.Scan(&t.ID, &payload, &status, &created, &updated, &errField); err != nil {
+			return nil, fmt.Errorf("scan task row: %w", err)
+		}
+
+		t.Payload = append([]byte(nil), payload...)
+		t.Status = task.Status(status)
+		t.CreatedAt = time.Unix(0, created).UTC()
+		t.UpdatedAt = time.Unix(0, updated).UTC()
+		t.Error = errField
+
+		tasks = append(tasks, &t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate task rows: %w", err)
+	}
+
+	return tasks, nil
 }
 
 func (s *Store) Get(id string) (*task.Task, error) {
 	row := s.db.QueryRow(
 		`SELECT id, payload, status, created_at, updated_at, error
-		 FROM tasks
-		 WHERE id = ?`,
+		FROM tasks
+		WHERE id = ?`,
 		id,
 	)
 
@@ -112,8 +150,8 @@ func (s *Store) Get(id string) (*task.Task, error) {
 func (s *Store) UpdateStatus(id string, status task.Status, errMsg string) error {
 	res, err := s.db.Exec(
 		`UPDATE tasks
-		 SET status = ?, error = ?, updated_at = ?
-		 WHERE id = ?`,
+		SET status = ?, error = ?, updated_at = ?
+		WHERE id = ?`,
 		string(status),
 		errMsg,
 		time.Now().UTC().UnixNano(),
@@ -130,7 +168,6 @@ func (s *Store) UpdateStatus(id string, status task.Status, errMsg string) error
 	if affected == 0 {
 		return task.ErrNotFound
 	}
-
 	return nil
 }
 

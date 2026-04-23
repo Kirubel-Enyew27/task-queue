@@ -72,6 +72,27 @@ func (q *Queue) Enqueue(t *task.Task) error {
 	}
 }
 
+func (q *Queue) Restore(t *task.Task) error {
+	if t == nil {
+		return fmt.Errorf("task is nil")
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if q.closed {
+		return fmt.Errorf("queue is closed")
+	}
+
+	select {
+	case q.ch <- t.Clone():
+		q.log.Info("task restored into queue", "id", t.ID)
+		return nil
+	default:
+		return fmt.Errorf("queue is full, capacity=%d", cap(q.ch))
+	}
+}
+
 func (q *Queue) Dequeue() <-chan *task.Task {
 	return q.ch
 }

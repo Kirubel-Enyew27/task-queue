@@ -3,9 +3,8 @@ package memory
 import (
 	"fmt"
 	"sync"
-	"time"
-
 	"task-queue/internal/task"
+	"time"
 )
 
 type Store struct {
@@ -36,8 +35,8 @@ func (s *Store) Save(t *task.Task) error {
 }
 
 func (s *Store) Get(id string) (*task.Task, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	t, ok := s.tasks[id]
 	if !ok {
@@ -74,6 +73,20 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
+func (s *Store) ListByStatus(status task.Status) ([]*task.Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tasks := make([]*task.Task, 0)
+	for _, t := range s.tasks {
+		if t.Status == status {
+			tasks = append(tasks, cloneTask(t))
+		}
+	}
+
+	return tasks, nil
+}
+
 func cloneTask(t *task.Task) *task.Task {
 	if t == nil {
 		return nil
@@ -83,6 +96,5 @@ func cloneTask(t *task.Task) *task.Task {
 	if t.Payload != nil {
 		cp.Payload = append([]byte(nil), t.Payload...)
 	}
-
 	return &cp
 }

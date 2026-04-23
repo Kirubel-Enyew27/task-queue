@@ -82,6 +82,11 @@ func main() {
 		pool.Start(workerCtx)
 	}()
 
+	if err := rehydratePendingTasks(q, dbStore); err != nil {
+		log.Error("failed to rehydrate pending tasks", "err", err)
+		os.Exit(1)
+	}
+
 	go func() {
 		log.Info("http server listening", "addr", serverAddress)
 		serverErrCh <- server.ListenAndServe()
@@ -118,6 +123,21 @@ func closeQueue(q *queue.Queue) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	q.Drain(ctx)
+}
+
+func rehydratePendingTasks(q *queue.Queue, store *sqlite.Store) error {
+	pending, err := store.ListByStatus(task.StatusPending)
+	if err != nil {
+		return err
+	}
+
+	for _, t := range pending {
+		if err := q.Restore(t); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func waitForPoolShutdown(done <-chan struct{}, cancel context.CancelFunc, timeout time.Duration, log *slog.Logger) {

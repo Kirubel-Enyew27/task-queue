@@ -7,4 +7,5 @@ type TaskStore interface {
 	Get(id string) (*task.Task, error)
 	UpdateStatus(id string, status task.Status, errMsg string) error
 	Delete(id string) error
+	ListByStatus(status task.Status) ([]*task.Task, error)
 }
