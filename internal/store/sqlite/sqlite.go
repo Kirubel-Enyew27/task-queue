@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	_ "modernc.org/sqlite"
 	"task-queue/internal/task"
 	"time"
 )
@@ -112,6 +113,31 @@ func (s *Store) ListByStatus(status task.Status) ([]*task.Task, error) {
 	}
 
 	return tasks, nil
+}
+
+func (s *Store) ClaimPending(id string) (bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE tasks
+		SET status = ?, error = '', updated_at = ?
+		WHERE id = ? AND status = ?`,
+		string(task.StatusProcessing),
+		time.Now().UTC().UnixNano(),
+		id,
+		string(task.StatusPending),
+	)
+	if err != nil {
+		return false, fmt.Errorf("claim task %s: %w", id, err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim task %s rows affected: %w", id, err)
+	}
+	if affected == 0 {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 func (s *Store) Get(id string) (*task.Task, error) {

@@ -35,8 +35,8 @@ func (s *Store) Save(t *task.Task) error {
 }
 
 func (s *Store) Get(id string) (*task.Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	t, ok := s.tasks[id]
 	if !ok {
@@ -44,6 +44,24 @@ func (s *Store) Get(id string) (*task.Task, error) {
 	}
 
 	return cloneTask(t), nil
+}
+
+func (s *Store) ClaimPending(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	t, ok := s.tasks[id]
+	if !ok {
+		return false, task.ErrNotFound
+	}
+	if t.Status != task.StatusPending {
+		return false, nil
+	}
+
+	t.Status = task.StatusProcessing
+	t.UpdatedAt = time.Now().UTC()
+	t.Error = ""
+	return true, nil
 }
 
 func (s *Store) UpdateStatus(id string, status task.Status, errMsg string) error {

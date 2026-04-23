@@ -85,6 +85,7 @@ func (h *Handler) getTask(w http.ResponseWriter, r *http.Request) {
 		}
 		h.log.Error("failed to get task", "id", id, "err", err)
 		utils.WriteJSON(w, http.StatusInternalServerError, errorResponse{Error: "failed to read task"})
+		return
 	}
 
 	utils.WriteJSON(w, http.StatusOK, utils.NewTaskResponse(t))
