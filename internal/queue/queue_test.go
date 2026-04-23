@@ -1,6 +1,7 @@
 package queue_test
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"testing"
@@ -50,6 +51,19 @@ func TestEnqueue_Full_ReturnsError(t *testing.T) {
 
 	if _, ok := q.Get("t2"); ok {
 		t.Fatal("task should not be stored when enqueue fails")
+	}
+}
+
+func TestEnqueue_AfterDrain_ReturnsError(t *testing.T) {
+	q := queue.New(1, discardLog)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	q.Drain(ctx)
+
+	err := q.Enqueue(newTask("t3"))
+	if err == nil {
+		t.Fatal("expected error when enqueueing to closed queue")
 	}
 }
 
@@ -106,5 +120,26 @@ func TestUpdateStatus_SetsError(t *testing.T) {
 	got, _ := q.Get("t4")
 	if got.Error != "something went wrong" {
 		t.Errorf("expected error message to be stored, got %q", got.Error)
+	}
+}
+
+func TestGet_ReturnsCopy(t *testing.T) {
+	q := queue.New(5, discardLog)
+	_ = q.Enqueue(newTask("t5"))
+
+	got, ok := q.Get("t5")
+	if !ok {
+		t.Fatal("task not found")
+	}
+
+	got.Status = task.StatusFailed
+	got.Payload[0] = '{'
+
+	original, _ := q.Get("t5")
+	if original.Status != task.StatusPending {
+		t.Fatalf("expected original status to remain pending, got %q", original.Status)
+	}
+	if string(original.Payload) != `{"test": true}` {
+		t.Fatalf("expected original payload to remain unchanged, got %s", original.Payload)
 	}
 }
