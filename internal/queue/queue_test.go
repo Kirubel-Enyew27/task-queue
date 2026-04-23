@@ -2,6 +2,7 @@ package queue_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"testing"
@@ -25,8 +26,11 @@ func TestEnqueue_SetsStatusAndTimeStamps(t *testing.T) {
 		t.Fatalf("unexpected enqueue error: %v", err)
 	}
 
-	got, ok := q.Get("t1")
-	if !ok {
+	got, err := q.Get("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got == nil {
 		t.Fatal("task not found after enqueue")
 	}
 	if got.Status != task.StatusPending {
@@ -49,7 +53,7 @@ func TestEnqueue_Full_ReturnsError(t *testing.T) {
 		t.Fatal("expected error on full queue, got nil")
 	}
 
-	if _, ok := q.Get("t2"); ok {
+	if _, err := q.Get("t2"); err == nil {
 		t.Fatal("task should not be stored when enqueue fails")
 	}
 }
@@ -90,7 +94,10 @@ func TestUpdateStatus(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, _ := q.Get("t3")
+	got, err := q.Get("t3")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
 	if got.Status != task.StatusCompleted {
 		t.Errorf("expected %q, got %q", task.StatusCompleted, got.Status)
 	}
@@ -106,9 +113,9 @@ func TestUpdateStatus_UnknownID_ReturnsError(t *testing.T) {
 
 func TestGet_NotFound(t *testing.T) {
 	q := queue.New(5, discardLog)
-	_, ok := q.Get("ghost")
-	if ok {
-		t.Error("expected ok=false or missing task")
+	_, err := q.Get("ghost")
+	if !errors.Is(err, task.ErrNotFound) {
+		t.Fatalf("expected task.ErrNotFound, got %v", err)
 	}
 }
 
@@ -117,7 +124,10 @@ func TestUpdateStatus_SetsError(t *testing.T) {
 	_ = q.Enqueue(newTask("t4"))
 	_ = q.UpdateStatus("t4", task.StatusFailed, "something went wrong")
 
-	got, _ := q.Get("t4")
+	got, err := q.Get("t4")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
 	if got.Error != "something went wrong" {
 		t.Errorf("expected error message to be stored, got %q", got.Error)
 	}
@@ -127,15 +137,18 @@ func TestGet_ReturnsCopy(t *testing.T) {
 	q := queue.New(5, discardLog)
 	_ = q.Enqueue(newTask("t5"))
 
-	got, ok := q.Get("t5")
-	if !ok {
-		t.Fatal("task not found")
+	got, err := q.Get("t5")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
 	}
 
 	got.Status = task.StatusFailed
 	got.Payload[0] = '{'
 
-	original, _ := q.Get("t5")
+	original, err := q.Get("t5")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
 	if original.Status != task.StatusPending {
 		t.Fatalf("expected original status to remain pending, got %q", original.Status)
 	}

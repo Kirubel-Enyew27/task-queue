@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"task-queue/internal/api"
 	"task-queue/internal/queue"
+	"task-queue/internal/store/sqlite"
 	"task-queue/internal/task"
 	"task-queue/internal/worker"
 )
@@ -33,7 +35,24 @@ func main() {
 		workerCount   = 3
 	)
 
-	q := queue.New(queueCapacity, log)
+	dbPath := taskDBPath()
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+		log.Error("failed to create database directory", "path", dbPath, "err", err)
+		os.Exit(1)
+	}
+
+	dbStore, err := sqlite.Open(dbPath)
+	if err != nil {
+		log.Error("failed to open sqlite store", "path", dbPath, "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := dbStore.Close(); err != nil {
+			log.Error("failed to close sqlite store", "err", err)
+		}
+	}()
+
+	q := queue.NewWithStore(queueCapacity, dbStore, log)
 	httpHandler := api.NewHandler(q, log)
 	server := &http.Server{
 		Addr:    serverAddress,
@@ -86,6 +105,13 @@ func main() {
 	closeQueue(q)
 	waitForPoolShutdown(poolDone, cancelWorkers, shutdownTimeout, log)
 	log.Info("shutdown complete")
+}
+
+func taskDBPath() string {
+	if path := os.Getenv("TASK_QUEUE_DB_PATH"); path != "" {
+		return path
+	}
+	return filepath.Join(".", "task_queue.db")
 }
 
 func closeQueue(q *queue.Queue) {

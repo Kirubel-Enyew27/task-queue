@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"task-queue/internal/task"
@@ -10,7 +11,7 @@ import (
 
 type TaskQueue interface {
 	Enqueue(t *task.Task) error
-	Get(id string) (*task.Task, bool)
+	Get(id string) (*task.Task, error)
 }
 
 type Handler struct {
@@ -76,9 +77,14 @@ func (h *Handler) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, ok := h.queue.Get(id)
-	if !ok {
-		utils.WriteJSON(w, http.StatusNotFound, errorResponse{Error: "task not found"})
+	t, err := h.queue.Get(id)
+	if err != nil {
+		if errors.Is(err, task.ErrNotFound) {
+			utils.WriteJSON(w, http.StatusNotFound, errorResponse{Error: "task not found"})
+			return
+		}
+		h.log.Error("failed to get task", "id", id, "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, errorResponse{Error: "failed to read task"})
 		return
 	}
 

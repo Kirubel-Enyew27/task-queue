@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"time"
 )
 
@@ -12,6 +13,8 @@ const (
 	StatusCompleted  Status = "completed"
 	StatusFailed     Status = "failed"
 )
+
+var ErrNotFound = errors.New("task not found")
 
 type Task struct {
 	ID        string

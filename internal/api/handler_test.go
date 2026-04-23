@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -50,8 +51,11 @@ func TestCreateTask(t *testing.T) {
 		t.Fatalf("payload = %s", got.Payload)
 	}
 
-	stored, ok := q.Get(got.ID)
-	if !ok {
+	stored, err := q.Get(got.ID)
+	if err != nil {
+		t.Fatalf("get stored task: %v", err)
+	}
+	if stored == nil {
 		t.Fatal("task not stored in queue")
 	}
 	if string(stored.Payload) != `{"job":"demo","count":1}` {
@@ -119,4 +123,25 @@ func TestGetTask_NotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
+}
+
+func TestGetTask_StoreError(t *testing.T) {
+	handler := api.NewHandler(failingQueue{}, testLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-123", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+type failingQueue struct{}
+
+func (failingQueue) Enqueue(*task.Task) error { return nil }
+
+func (failingQueue) Get(string) (*task.Task, error) {
+	return nil, errors.New("boom")
 }
