@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"task-queue/internal/api"
 	"task-queue/internal/queue"
+	"task-queue/internal/store/sqlite"
 	"task-queue/internal/task"
 	"task-queue/internal/worker"
 )
@@ -33,7 +35,25 @@ func main() {
 		workerCount   = 3
 	)
 
-	q := queue.New(queueCapacity, log)
+	dbPath := taskDBPath()
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+		log.Error("failed to create database directory", "path", dbPath, "err", err)
+		os.Exit(1)
+	}
+
+	dbStore, err := sqlite.Open(dbPath)
+	if err != nil {
+		log.Error("failed to open sqlite store", "path", dbPath, "err", err)
+		os.Exit(1)
+	}
+
+	defer func() {
+		if err := dbStore.Close(); err != nil {
+			log.Error("failed to close sqlite store", "err", err)
+		}
+	}()
+
+	q := queue.NewWithStore(queueCapacity, dbStore, log)
 	httpHandler := api.NewHandler(q, log)
 	server := &http.Server{
 		Addr:    serverAddress,
@@ -55,7 +75,6 @@ func main() {
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 	poolDone := make(chan struct{})
-
 	serverErrCh := make(chan error, 1)
 
 	log.Info("starting worker pool", "workers", workerCount)
@@ -63,6 +82,11 @@ func main() {
 		defer close(poolDone)
 		pool.Start(workerCtx)
 	}()
+
+	if err := rehydratePendingTasks(q, dbStore); err != nil {
+		log.Error("failed to rehydrate pending tasks", "err", err)
+		os.Exit(1)
+	}
 
 	go func() {
 		log.Info("http server listening", "addr", serverAddress)
@@ -89,10 +113,32 @@ func main() {
 	log.Info("shutdown complete")
 }
 
+func taskDBPath() string {
+	if path := os.Getenv("TASK_QUEUE_DB_PATH"); path != "" {
+		return path
+	}
+	return filepath.Join(".", "task_queue.db")
+}
+
 func closeQueue(q *queue.Queue) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	q.Drain(ctx)
+}
+
+func rehydratePendingTasks(q *queue.Queue, store *sqlite.Store) error {
+	pending, err := store.ListByStatus(task.StatusPending)
+	if err != nil {
+		return err
+	}
+
+	for _, t := range pending {
+		if err := q.Restore(t); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func waitForPoolShutdown(done <-chan struct{}, cancel context.CancelFunc, timeout time.Duration, log *slog.Logger) {
