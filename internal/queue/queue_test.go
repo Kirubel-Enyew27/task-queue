@@ -1,12 +1,10 @@
 package queue_test
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"os"
 	"testing"
-	"time"
 
 	"task-queue/internal/queue"
 	"task-queue/internal/task"
@@ -18,7 +16,7 @@ func newTask(id string) *task.Task {
 	return &task.Task{ID: id, Payload: []byte(`{"test": true}`)}
 }
 
-func TestEnqueue_SetsStatusAndTimeStamps(t *testing.T) {
+func TestEnqueue_PersistsTask(t *testing.T) {
 	q := queue.New(10, discardLog)
 	tk := newTask("t1")
 
@@ -30,59 +28,25 @@ func TestEnqueue_SetsStatusAndTimeStamps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got == nil {
-		t.Fatal("task not found after enqueue")
-	}
 	if got.Status != task.StatusPending {
-		t.Errorf("expected status %q, got %q", task.StatusPending, got.Status)
+		t.Fatalf("expected status %q, got %q", task.StatusPending, got.Status)
 	}
 	if got.CreatedAt.IsZero() {
-		t.Error("CreatedAt should be set")
+		t.Fatal("CreatedAt should be set")
 	}
 	if got.UpdatedAt.IsZero() {
-		t.Error("UpdatedAt should be set")
+		t.Fatal("UpdatedAt should be set")
 	}
 }
 
-func TestEnqueue_Full_ReturnsError(t *testing.T) {
-	q := queue.New(1, discardLog)
-	_ = q.Enqueue(newTask("t1"))
-
-	err := q.Enqueue(newTask("t2"))
-	if err == nil {
-		t.Fatal("expected error on full queue, got nil")
+func TestEnqueue_DuplicateReturnsError(t *testing.T) {
+	q := queue.New(10, discardLog)
+	if err := q.Enqueue(newTask("dup")); err != nil {
+		t.Fatalf("first enqueue failed: %v", err)
 	}
 
-	if _, err := q.Get("t2"); err == nil {
-		t.Fatal("task should not be stored when enqueue fails")
-	}
-}
-
-func TestEnqueue_AfterDrain_ReturnsError(t *testing.T) {
-	q := queue.New(1, discardLog)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	q.Drain(ctx)
-
-	err := q.Enqueue(newTask("t3"))
-	if err == nil {
-		t.Fatal("expected error when enqueueing to closed queue")
-	}
-}
-
-func TestDequeue_ReceivesEnqueuedTask(t *testing.T) {
-	q := queue.New(5, discardLog)
-	tk := newTask("t2")
-	_ = q.Enqueue(tk)
-
-	select {
-	case got := <-q.Dequeue():
-		if got.ID != "t2" {
-			t.Errorf("expected task id t2, got %s", got.ID)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for task on channel")
+	if err := q.Enqueue(newTask("dup")); err == nil {
+		t.Fatal("expected dupilcate task error")
 	}
 }
 

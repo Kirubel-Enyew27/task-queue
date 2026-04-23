@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	_ "modernc.org/sqlite"
 	"task-queue/internal/task"
 	"time"
 )
@@ -113,6 +114,54 @@ func (s *Store) ListByStatus(status task.Status) ([]*task.Task, error) {
 	}
 
 	return tasks, nil
+}
+
+func (s *Store) ClaimAvailable(id string, staleAfter time.Duration) (bool, error) {
+	now := time.Now().UTC()
+	args := []any{
+		string(task.StatusProcessing),
+		now.UnixNano(),
+		id,
+		string(task.StatusPending),
+	}
+	query := `UPDATE tasks
+		SET status = ?, error = '', updated_at = ?
+		WHERE id = ? AND status = ?`
+
+	if staleAfter > 0 {
+		args = []any{
+			string(task.StatusProcessing),
+			now.UnixNano(),
+			id,
+			string(task.StatusPending),
+			string(task.StatusProcessing),
+			now.Add(-staleAfter).UnixNano(),
+		}
+		query = `UPDATE tasks
+		SET status = ?, error = '', updated_at = ?
+		WHERE id = ? AND (
+			status = ?
+			OR (status = ? AND updated_at <= ?)
+		)`
+	}
+
+	res, err := s.db.Exec(
+		query,
+		args...,
+	)
+	if err != nil {
+		return false, fmt.Errorf("claim task %s: %w", id, err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim task %s rows affected: %w", id, err)
+	}
+	if affected == 0 {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 func (s *Store) Get(id string) (*task.Task, error) {

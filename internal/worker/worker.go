@@ -5,74 +5,116 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
+	"task-queue/internal/store"
 	"task-queue/internal/task"
 )
 
 type HandlerFunc func(ctx context.Context, t *task.Task) error
 
-type StatusUpdater interface {
-	UpdateStatus(id string, status task.Status, errMsg string) error
-	Dequeue() <-chan *task.Task
-}
-
 type Pool struct {
-	concurrency int
-	updater     StatusUpdater
-	handler     HandlerFunc
-	log         *slog.Logger
-	wg          sync.WaitGroup
+	concurrency  int
+	pollInterval time.Duration
+	claimTimeout time.Duration
+	store        store.TaskStore
+	handler      HandlerFunc
+	log          *slog.Logger
+	wg           sync.WaitGroup
 }
 
-func NewPool(concurrency int, updater StatusUpdater, handler HandlerFunc, log *slog.Logger) *Pool {
+func NewPool(concurrency int, pollInterval time.Duration, store store.TaskStore, handler HandlerFunc, log *slog.Logger) *Pool {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if pollInterval <= 0 {
+		pollInterval = 250 * time.Millisecond
+	}
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Pool{
-		concurrency: concurrency,
-		updater:     updater,
-		handler:     handler,
-		log:         log,
+		concurrency:  concurrency,
+		pollInterval: pollInterval,
+		claimTimeout: time.Minute,
+		store:        store,
+		handler:      handler,
+		log:          log,
 	}
 }
 
 func (p *Pool) Start(ctx context.Context) {
-	p.log.Info("worker pool starting", "concurrency", p.concurrency)
-	ch := p.updater.Dequeue()
+	p.log.Info("worker pool starting", "concurrency", p.concurrency, "poll_interval", p.pollInterval.String())
 
-	for i := range p.concurrency {
+	for i := 0; i < p.concurrency; i++ {
 		p.wg.Add(1)
-		go p.run(ctx, i, ch)
+		go p.run(ctx, i)
 	}
 
 	p.wg.Wait()
 	p.log.Info("worker pool stopped")
 }
 
-func (p *Pool) run(ctx context.Context, id int, ch <-chan *task.Task) {
+func (p *Pool) run(ctx context.Context, id int) {
 	defer p.wg.Done()
 	log := p.log.With("worker_id", id)
 	log.Info("worker started")
 
-	for {
-		select {
-		case t, ok := <-ch:
-			if !ok {
-				log.Info("worker shutting down (channel closed)")
-				return
-			}
-			p.process(ctx, log, t)
+	ticker := time.NewTicker(p.pollInterval)
+	defer ticker.Stop()
 
+	for {
+		t, err := p.nextTask(ctx)
+		if err != nil {
+			log.Error("poll failed", "err", err)
+		}
+		if t != nil {
+			p.process(ctx, log, t)
+			continue
+		}
+
+		select {
 		case <-ctx.Done():
-			log.Info("worker shutting down (conetxt cancelled)")
+			log.Info("worker shutting down", "err", ctx.Err())
 			return
+		case <-ticker.C:
 		}
 	}
 }
 
+func (p *Pool) nextTask(ctx context.Context) (*task.Task, error) {
+	pending, err := p.store.ListByStatus(task.StatusPending)
+	if err != nil {
+		return nil, err
+	}
+	processing, err := p.store.ListByStatus(task.StatusProcessing)
+	if err != nil {
+		return nil, err
+	}
+
+	tasks := append(pending, processing...)
+	for _, t := range tasks {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		claimed, err := p.store.ClaimAvailable(t.ID, p.claimTimeout)
+		if err != nil {
+			return nil, err
+		}
+		if !claimed {
+			continue
+		}
+
+		claimedTask := t.Clone()
+		claimedTask.Status = task.StatusProcessing
+		return claimedTask, nil
+	}
+	return nil, nil
+}
+
 func (p *Pool) process(ctx context.Context, log *slog.Logger, t *task.Task) {
 	log.Info("processing task", "id", t.ID)
-
-	if err := p.updater.UpdateStatus(t.ID, task.StatusProcessing, ""); err != nil {
-		log.Error("failed to update status or processing", "id", t.ID, "err", err)
-	}
 
 	err := p.handler(ctx, t)
 	if err != nil {
@@ -83,10 +125,10 @@ func (p *Pool) process(ctx context.Context, log *slog.Logger, t *task.Task) {
 			errMsg = err.Error()
 		}
 		log.Error("task failed", "id", t.ID, "err", errMsg)
-		_ = p.updater.UpdateStatus(t.ID, task.StatusFailed, errMsg)
+		_ = p.store.UpdateStatus(t.ID, task.StatusFailed, errMsg)
 		return
 	}
 
 	log.Info("task completed", "id", t.ID)
-	_ = p.updater.UpdateStatus(t.ID, task.StatusCompleted, "")
+	_ = p.store.UpdateStatus(t.ID, task.StatusCompleted, "")
 }

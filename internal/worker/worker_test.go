@@ -5,168 +5,140 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"task-queue/internal/queue"
+	"task-queue/internal/store/memory"
 	"task-queue/internal/task"
 	"task-queue/internal/worker"
 )
 
 var discardLog = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-type fakeQueue struct {
-	mu      sync.Mutex
-	tasks   map[string]*task.Task
-	ch      chan *task.Task
-	updates []statusUpdate
-}
+func waitForStatus(t *testing.T, q *queue.Queue, id string, want task.Status, timeout time.Duration) {
+	t.Helper()
 
-type statusUpdate struct {
-	id     string
-	status task.Status
-	errMsg string
-}
-
-func newFakeQueue(cap int) *fakeQueue {
-	return &fakeQueue{
-		tasks: make(map[string]*task.Task, cap),
-		ch:    make(chan *task.Task, cap),
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		got, err := q.Get(id)
+		if err == nil && got.Status == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-}
 
-func (f *fakeQueue) Dequeue() <-chan *task.Task { return f.ch }
-
-func (f *fakeQueue) UpdateStatus(id string, status task.Status, errMsg string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.updates = append(f.updates, statusUpdate{id, status, errMsg})
-	if t, ok := f.tasks[id]; ok {
-		t.Status = status
+	got, err := q.Get(id)
+	if err != nil {
+		t.Fatalf("get task %s: %v", id, err)
 	}
-	return nil
+	t.Fatalf("task %s status = %q, want %q", id, got.Status, want)
 }
-
-func (f *fakeQueue) push(t *task.Task) {
-	f.mu.Lock()
-	f.tasks[t.ID] = t
-	f.mu.Unlock()
-	f.ch <- t
-}
-
-func (f *fakeQueue) close() { close(f.ch) }
 
 func TestPool_ProcessesTasksSuccessfully(t *testing.T) {
-	fq := newFakeQueue(10)
-	var processed []string
-	var mu sync.Mutex
 
+	store := memory.New()
+	q := queue.NewWithStore(0, store, discardLog)
+	for _, id := range []string{"w1", "w2"} {
+		if err := q.Enqueue(&task.Task{ID: id, Payload: []byte(`{"job":"demo"}`)}); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+
+	var processed atomic.Int32
 	handler := func(_ context.Context, tk *task.Task) error {
-		mu.Lock()
-		processed = append(processed, tk.ID)
-		mu.Unlock()
+		processed.Add(1)
 		return nil
 	}
 
-	pool := worker.NewPool(2, fq, handler, discardLog)
+	pool := worker.NewPool(2, 10*time.Millisecond, store, handler, discardLog)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pool.Start(ctx)
+	}()
 
-	fq.push(&task.Task{ID: "w1"})
-	fq.push(&task.Task{ID: "w2"})
-	fq.close()
+	waitForStatus(t, q, "w1", task.StatusCompleted, 2*time.Second)
+	waitForStatus(t, q, "w2", task.StatusCompleted, 2*time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	cancel()
+	<-done
 
-	pool.Start(ctx)
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(processed) != 2 {
-		t.Errorf("expected 2 processed tasks, got %d", len(processed))
+	if got := processed.Load(); got != 2 {
+		t.Fatalf("processed = %d, want 2", got)
 	}
 }
 
 func TestPool_MarksFailed_OnHandlerError(t *testing.T) {
-	fq := newFakeQueue(5)
-
+	store := memory.New()
+	q := queue.NewWithStore(0, store, discardLog)
+	if err := q.Enqueue(&task.Task{ID: "bad-task", Payload: []byte(`{"job":"fail"}`)}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
 	handler := func(_ context.Context, _ *task.Task) error {
 		return errors.New("simulated failure")
 	}
 
-	pool := worker.NewPool(1, fq, handler, discardLog)
-	fq.push(&task.Task{ID: "bad-task"})
-	fq.close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	pool.Start(ctx)
-
-	fq.mu.Lock()
-	defer fq.mu.Unlock()
-
-	var finalStatus task.Status
-	for _, u := range fq.updates {
-		if u.id == "bad-task" {
-			finalStatus = u.status
-		}
-	}
-	if finalStatus != task.StatusFailed {
-		t.Errorf("expected statusFailed, got %q", finalStatus)
-	}
-}
-
-func TestPool_StopOnContextCancel(t *testing.T) {
-	fq := newFakeQueue(10)
-
-	handler := func(ctx context.Context, _ *task.Task) error {
-		<-ctx.Done()
-		return ctx.Err()
-	}
-
-	pool := worker.NewPool(2, fq, handler, discardLog)
-
-	fq.push(&task.Task{ID: "blocking"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
+	pool := worker.NewPool(1, 10*time.Millisecond, store, handler, discardLog)
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		pool.Start(ctx)
-		close(done)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("worker pool did not stop after context cancellation")
+	waitForStatus(t, q, "bad-task", task.StatusFailed, 2*time.Second)
+
+	cancel()
+	<-done
+}
+
+func TestPool_RespectsConcurrencyLimit(t *testing.T) {
+	store := memory.New()
+	q := queue.NewWithStore(0, store, discardLog)
+	for i := 0; i < 4; i++ {
+		id := taskID(i)
+		if err := q.Enqueue(&task.Task{ID: id, Payload: []byte(`{"job":"slow"}`)}); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	handler := func(_ context.Context, _ *task.Task) error {
+		cur := inFlight.Add(1)
+		for {
+			max := maxInFlight.Load()
+			if cur <= max || maxInFlight.CompareAndSwap(max, cur) {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+		inFlight.Add(-1)
+		return nil
+	}
+
+	pool := worker.NewPool(2, 10*time.Millisecond, store, handler, discardLog)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pool.Start(ctx)
+	}()
+
+	for i := 0; i < 4; i++ {
+		waitForStatus(t, q, taskID(i), task.StatusCompleted, 3*time.Second)
+	}
+
+	cancel()
+	<-done
+
+	if got := maxInFlight.Load(); got > 2 {
+		t.Fatalf("max in-flight = %d, want <= 2", got)
 	}
 }
 
-func TestPool_SetProcessingBeforeHandling(t *testing.T) {
-	fq := newFakeQueue(5)
-
-	handler := func(_ context.Context, _ *task.Task) error { return nil }
-
-	pool := worker.NewPool(1, fq, handler, discardLog)
-	fq.push(&task.Task{ID: "seq"})
-	fq.close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	pool.Start(ctx)
-
-	fq.mu.Lock()
-	defer fq.mu.Unlock()
-
-	if len(fq.updates) < 2 {
-		t.Fatalf("expected at least 2 status updates, got %d", len(fq.updates))
-	}
-	if fq.updates[0].status != task.StatusProcessing {
-		t.Errorf("first update should be StatusProcessing, got %q", fq.updates[0].status)
-	}
-	if fq.updates[1].status != task.StatusCompleted {
-		t.Errorf("second update should be StatusCompleted, got %q", fq.updates[1].status)
-	}
+func taskID(i int) string {
+	return string(rune('a' + i))
 }
