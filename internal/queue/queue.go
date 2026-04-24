@@ -45,7 +45,6 @@ func (q *Queue) Enqueue(t *task.Task) error {
 	if err := q.store.Save(t); err != nil {
 		return err
 	}
-
 	q.log.Info("task enqueued", "id", t.ID)
 	return nil
 }

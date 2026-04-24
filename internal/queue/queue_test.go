@@ -46,7 +46,7 @@ func TestEnqueue_DuplicateReturnsError(t *testing.T) {
 	}
 
 	if err := q.Enqueue(newTask("dup")); err == nil {
-		t.Fatal("expected duplicate task error")
+		t.Fatal("expected dupilcate task error")
 	}
 }
 

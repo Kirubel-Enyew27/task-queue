@@ -37,6 +37,7 @@ func waitForStatus(t *testing.T, q *queue.Queue, id string, want task.Status, ti
 }
 
 func TestPool_ProcessesTasksSuccessfully(t *testing.T) {
+
 	store := memory.New()
 	q := queue.NewWithStore(0, store, discardLog)
 	for _, id := range []string{"w1", "w2"} {
@@ -76,7 +77,6 @@ func TestPool_MarksFailed_OnHandlerError(t *testing.T) {
 	if err := q.Enqueue(&task.Task{ID: "bad-task", Payload: []byte(`{"job":"fail"}`)}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-
 	handler := func(_ context.Context, _ *task.Task) error {
 		return errors.New("simulated failure")
 	}
@@ -104,7 +104,6 @@ func TestPool_RespectsConcurrencyLimit(t *testing.T) {
 			t.Fatalf("enqueue %s: %v", id, err)
 		}
 	}
-
 	var inFlight atomic.Int32
 	var maxInFlight atomic.Int32
 	handler := func(_ context.Context, _ *task.Task) error {

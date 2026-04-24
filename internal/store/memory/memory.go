@@ -46,7 +46,7 @@ func (s *Store) Get(id string) (*task.Task, error) {
 	return cloneTask(t), nil
 }
 
-func (s *Store) ClaimPending(id string) (bool, error) {
+func (s *Store) ClaimAvailable(id string, staleAfter time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -54,7 +54,18 @@ func (s *Store) ClaimPending(id string) (bool, error) {
 	if !ok {
 		return false, task.ErrNotFound
 	}
-	if t.Status != task.StatusPending {
+	if t.Status == task.StatusPending {
+		t.Status = task.StatusProcessing
+		t.UpdatedAt = time.Now().UTC()
+		t.Error = ""
+		return true, nil
+	}
+
+	if t.Status != task.StatusProcessing {
+		return false, nil
+	}
+
+	if staleAfter <= 0 || time.Since(t.UpdatedAt) <= staleAfter {
 		return false, nil
 	}
 

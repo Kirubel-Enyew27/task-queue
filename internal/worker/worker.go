@@ -16,6 +16,7 @@ type HandlerFunc func(ctx context.Context, t *task.Task) error
 type Pool struct {
 	concurrency  int
 	pollInterval time.Duration
+	claimTimeout time.Duration
 	store        store.TaskStore
 	handler      HandlerFunc
 	log          *slog.Logger
@@ -32,10 +33,10 @@ func NewPool(concurrency int, pollInterval time.Duration, store store.TaskStore,
 	if log == nil {
 		log = slog.Default()
 	}
-
 	return &Pool{
 		concurrency:  concurrency,
 		pollInterval: pollInterval,
+		claimTimeout: time.Minute,
 		store:        store,
 		handler:      handler,
 		log:          log,
@@ -83,17 +84,22 @@ func (p *Pool) run(ctx context.Context, id int) {
 }
 
 func (p *Pool) nextTask(ctx context.Context) (*task.Task, error) {
-	tasks, err := p.store.ListByStatus(task.StatusPending)
+	pending, err := p.store.ListByStatus(task.StatusPending)
+	if err != nil {
+		return nil, err
+	}
+	processing, err := p.store.ListByStatus(task.StatusProcessing)
 	if err != nil {
 		return nil, err
 	}
 
+	tasks := append(pending, processing...)
 	for _, t := range tasks {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 
-		claimed, err := p.store.ClaimPending(t.ID)
+		claimed, err := p.store.ClaimAvailable(t.ID, p.claimTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -105,7 +111,6 @@ func (p *Pool) nextTask(ctx context.Context) (*task.Task, error) {
 		claimedTask.Status = task.StatusProcessing
 		return claimedTask, nil
 	}
-
 	return nil, nil
 }
 

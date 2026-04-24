@@ -9,11 +9,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
-	"time"
-
 	"task-queue/internal/store/sqlite"
 	"task-queue/internal/task"
 	"task-queue/internal/worker"
+	"time"
 )
 
 const defaultWorkerConcurrency = 3
