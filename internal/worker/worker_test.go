@@ -71,17 +71,22 @@ func TestPool_ProcessesTasksSuccessfully(t *testing.T) {
 	}
 }
 
-func TestPool_MarksFailed_OnHandlerError(t *testing.T) {
+func TestPool_RetriesFailedTask(t *testing.T) {
 	store := memory.New()
 	q := queue.NewWithStore(0, store, discardLog)
 	if err := q.Enqueue(&task.Task{ID: "bad-task", Payload: []byte(`{"job":"fail"}`)}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
+	var attempts atomic.Int32
 	handler := func(_ context.Context, _ *task.Task) error {
-		return errors.New("simulated failure")
+		if attempts.Add(1) == 1 {
+			return errors.New("simulated failure")
+		}
+		return nil
 	}
 
 	pool := worker.NewPool(1, 10*time.Millisecond, store, handler, discardLog)
+	pool.SetRetryPolicy(1, 200*time.Millisecond, 200*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -89,7 +94,62 @@ func TestPool_MarksFailed_OnHandlerError(t *testing.T) {
 		pool.Start(ctx)
 	}()
 
-	waitForStatus(t, q, "bad-task", task.StatusFailed, 2*time.Second)
+	waitForStatus(t, q, "bad-task", task.StatusRetrying, 2*time.Second)
+	waitForStatus(t, q, "bad-task", task.StatusCompleted, 2*time.Second)
+
+	cancel()
+	<-done
+}
+
+func TestPool_DeadLettersAfterRetriesExhausted(t *testing.T) {
+	store := memory.New()
+	q := queue.NewWithStore(0, store, discardLog)
+	if err := q.Enqueue(&task.Task{ID: "dead-task", Payload: []byte(`{"job":"fail"}`)}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	handler := func(_ context.Context, _ *task.Task) error {
+		return errors.New("simulated failure")
+	}
+
+	pool := worker.NewPool(1, 10*time.Millisecond, store, handler, discardLog)
+	pool.SetRetryPolicy(0, 10*time.Millisecond, 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pool.Start(ctx)
+	}()
+
+	waitForStatus(t, q, "dead-task", task.StatusDeadLettered, 2*time.Second)
+
+	cancel()
+	<-done
+}
+
+func TestPool_TaskTimeoutSchedulesRetry(t *testing.T) {
+	store := memory.New()
+	q := queue.NewWithStore(0, store, discardLog)
+	if err := q.Enqueue(&task.Task{ID: "timeout-task", Payload: []byte(`{"job":"slow"}`)}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	handler := func(ctx context.Context, _ *task.Task) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	pool := worker.NewPool(1, 10*time.Millisecond, store, handler, discardLog)
+	pool.SetTaskTimeout(20 * time.Millisecond)
+	pool.SetRetryPolicy(0, 10*time.Millisecond, 10*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pool.Start(ctx)
+	}()
+
+	waitForStatus(t, q, "timeout-task", task.StatusDeadLettered, 2*time.Second)
 
 	cancel()
 	<-done

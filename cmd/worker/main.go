@@ -17,6 +17,11 @@ import (
 
 const defaultWorkerConcurrency = 3
 const defaultPollInterval = 250 * time.Millisecond
+const defaultTaskTimeout = 5 * time.Second
+const defaultRetryBaseDelay = 250 * time.Millisecond
+const defaultRetryMaxDelay = 30 * time.Second
+const defaultMaxRetries = 3
+const defaultClaimTimeout = time.Minute
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -46,6 +51,11 @@ func main() {
 
 	concurrency := envInt("WORKER_CONCURRENCY", defaultWorkerConcurrency)
 	pollInterval := envDuration("WORKER_POLL_INTERVAL", defaultPollInterval)
+	taskTimeout := envDuration("WORKER_TASK_TIMEOUT", defaultTaskTimeout)
+	retryBaseDelay := envDuration("WORKER_RETRY_BASE_DELAY", defaultRetryBaseDelay)
+	retryMaxDelay := envDuration("WORKER_RETRY_MAX_DELAY", defaultRetryMaxDelay)
+	maxRetries := envInt("WORKER_MAX_RETRIES", defaultMaxRetries)
+	claimTimeout := envDuration("WORKER_CLAIM_TIMEOUT", defaultClaimTimeout)
 
 	handler := func(ctx context.Context, t *task.Task) error {
 		select {
@@ -58,6 +68,9 @@ func main() {
 	}
 
 	pool := worker.NewPool(concurrency, pollInterval, dbStore, handler, log)
+	pool.SetTaskTimeout(taskTimeout)
+	pool.SetRetryPolicy(maxRetries, retryBaseDelay, retryMaxDelay)
+	pool.SetClaimTimeout(claimTimeout)
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 

@@ -145,3 +145,32 @@ func (failingQueue) Enqueue(*task.Task) error { return nil }
 func (failingQueue) Get(string) (*task.Task, error) {
 	return nil, errors.New("boom")
 }
+
+func (failingQueue) GetByIdempotencyKey(string) (*task.Task, error) {
+	return nil, task.ErrNotFound
+}
+
+func TestCreateTask_IdempotencyReplay(t *testing.T) {
+	q := queue.New(10, testLogger())
+	handler := api.NewHandler(q, testLogger())
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(`{"payload":{"job":"demo"},"idempotency_key":"abc-123"}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+
+	first := rec.Body.String()
+
+	req2 := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(`{"payload":{"job":"demo"},"idempotency_key":"abc-123"}`))
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want %d", rec2.Code, http.StatusOK)
+	}
+
+	if rec2.Body.String() != first {
+		t.Fatalf("expected replay body to match original response")
+	}
+}

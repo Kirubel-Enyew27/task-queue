@@ -72,3 +72,44 @@ func TestStore_SaveGetUpdateDelete(t *testing.T) {
 		t.Fatalf("expected task.ErrNotFound after delete, got %v", err)
 	}
 }
+
+func TestStore_IdempotencyLookupAndRetryFields(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(filepath.Join(dir, "tasks.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tk := &task.Task{
+		ID:             "sqlite-task-2",
+		Payload:        []byte(`{"job":"persist"}`),
+		Status:         task.StatusRetrying,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		RetryCount:     1,
+		MaxRetries:     3,
+		NextRunAt:      now.Add(time.Second),
+		IdempotencyKey: "idem-1",
+	}
+
+	if err := store.Save(tk); err != nil {
+		t.Fatalf("save task: %v", err)
+	}
+
+	got, err := store.GetByIdempotencyKey("idem-1")
+	if err != nil {
+		t.Fatalf("get by idempotency key: %v", err)
+	}
+	if got.RetryCount != 1 || got.MaxRetries != 3 {
+		t.Fatalf("retry fields not persisted: got retry=%d max=%d", got.RetryCount, got.MaxRetries)
+	}
+	if got.Status != task.StatusRetrying {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusRetrying)
+	}
+}
