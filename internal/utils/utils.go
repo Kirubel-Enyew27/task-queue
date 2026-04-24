@@ -13,12 +13,17 @@ import (
 )
 
 type taskResponse struct {
-	ID        string          `json:"id"`
-	Payload   json.RawMessage `json:"payload"`
-	Status    task.Status     `json:"status"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
-	Error     string          `json:"error,omitempty"`
+	ID             string          `json:"id"`
+	Payload        json.RawMessage `json:"payload"`
+	Status         task.Status     `json:"status"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	Error          string          `json:"error,omitempty"`
+	RetryCount     int             `json:"retry_count"`
+	MaxRetries     int             `json:"max_retries"`
+	NextRunAt      time.Time       `json:"next_run_at,omitempty"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	DeadLetteredAt time.Time       `json:"dead_lettered_at,omitempty"`
 }
 
 func DecodeJSON(body io.ReadCloser, dst any) error {
@@ -64,5 +69,10 @@ func NewTaskResponse(t *task.Task) taskResponse {
 		CreatedAt: t.CreatedAt,
 		UpdatedAt: t.UpdatedAt,
 		Error:     t.Error,
+		RetryCount:     t.RetryCount,
+		MaxRetries:     t.MaxRetries,
+		NextRunAt:      t.NextRunAt,
+		IdempotencyKey: t.IdempotencyKey,
+		DeadLetteredAt: t.DeadLetteredAt,
 	}
 }

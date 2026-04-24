@@ -12,6 +12,7 @@ import (
 type TaskQueue interface {
 	Enqueue(t *task.Task) error
 	Get(id string) (*task.Task, error)
+	GetByIdempotencyKey(key string) (*task.Task, error)
 }
 
 type Handler struct {
@@ -20,7 +21,8 @@ type Handler struct {
 }
 
 type createTaskRequest struct {
-	Payload json.RawMessage `json:"payload"`
+	Payload        json.RawMessage `json:"payload"`
+	IdempotencyKey string          `json:"idempotency_key"`
 }
 
 type errorResponse struct {
@@ -56,12 +58,34 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.IdempotencyKey != "" {
+		if existing, err := h.queue.GetByIdempotencyKey(req.IdempotencyKey); err == nil {
+			h.log.Info("task replayed via idempotency key", "id", existing.ID, "key", req.IdempotencyKey)
+			utils.WriteJSON(w, http.StatusOK, utils.NewTaskResponse(existing))
+			return
+		} else if !errors.Is(err, task.ErrNotFound) {
+			h.log.Error("failed to resolve idempotency key", "key", req.IdempotencyKey, "err", err)
+			utils.WriteJSON(w, http.StatusInternalServerError, errorResponse{
+				Error: "failed to create task",
+			})
+			return
+		}
+	}
+
 	t := &task.Task{
-		ID:      utils.NewTaskID(),
-		Payload: append([]byte(nil), req.Payload...),
+		ID:             utils.NewTaskID(),
+		Payload:        append([]byte(nil), req.Payload...),
+		IdempotencyKey: req.IdempotencyKey,
 	}
 
 	if err := h.queue.Enqueue(t); err != nil {
+		if req.IdempotencyKey != "" {
+			if existing, lookupErr := h.queue.GetByIdempotencyKey(req.IdempotencyKey); lookupErr == nil {
+				h.log.Info("task replayed after enqueue race", "id", existing.ID, "key", req.IdempotencyKey)
+				utils.WriteJSON(w, http.StatusOK, utils.NewTaskResponse(existing))
+				return
+			}
+		}
 		h.log.Error("failed to enqueue task", "err", err)
 		utils.WriteJSON(w, http.StatusServiceUnavailable, errorResponse{Error: err.Error()})
 		return

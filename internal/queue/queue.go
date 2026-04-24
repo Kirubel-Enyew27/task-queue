@@ -41,6 +41,13 @@ func (q *Queue) Enqueue(t *task.Task) error {
 	t.Status = task.StatusPending
 	t.CreatedAt = time.Now().UTC()
 	t.UpdatedAt = t.CreatedAt
+	if t.MaxRetries <= 0 {
+		t.MaxRetries = 3
+	}
+	t.RetryCount = 0
+	if t.NextRunAt.IsZero() {
+		t.NextRunAt = t.CreatedAt
+	}
 
 	if err := q.store.Save(t); err != nil {
 		return err
@@ -60,10 +67,34 @@ func (q *Queue) Get(id string) (*task.Task, error) {
 	return t.Clone(), nil
 }
 
+func (q *Queue) GetByIdempotencyKey(key string) (*task.Task, error) {
+	t, err := q.store.GetByIdempotencyKey(key)
+	if err != nil {
+		if errors.Is(err, task.ErrNotFound) {
+			return nil, task.ErrNotFound
+		}
+		return nil, err
+	}
+	return t.Clone(), nil
+}
+
 func (q *Queue) UpdateStatus(id string, status task.Status, errMsg string) error {
 	if err := q.store.UpdateStatus(id, status, errMsg); err != nil {
 		if errors.Is(err, task.ErrNotFound) {
 			return fmt.Errorf("task not found: %s", id)
+		}
+		return err
+	}
+	return nil
+}
+
+func (q *Queue) Update(t *task.Task) error {
+	if t == nil {
+		return fmt.Errorf("task is nil")
+	}
+	if err := q.store.Update(t); err != nil {
+		if errors.Is(err, task.ErrNotFound) {
+			return fmt.Errorf("task not found: %s", t.ID)
 		}
 		return err
 	}
